@@ -27,6 +27,7 @@
 
 
 #include "HX711.h"
+#include <EEPROM.h>
 
 // Trigger defs
 #define OUTPUTPIN 13
@@ -41,6 +42,19 @@
 #define DATA_PIN 7
 #define CLK_PIN 6
 #define SCALE 2457.3f
+
+#define TARE_DURATION 20
+
+#define EEPROM_MAX_VALUES 10
+#define EEPROM_VERSION 0xAB01
+#define EEPROM_START 0
+#define EEPROM_ADDRESS_CURRENT_SENSOR (EEPROM_START + sizeof(uint16_t))
+#define EEPROM_ADDRESS_SCALES_START (EEPROM_ADDRESS_CURRENT_SENSOR + sizeof(unsigned char))
+unsigned int eeprom_address_scale[EEPROM_MAX_VALUES];
+unsigned char current_sensor = 0;
+float current_scale = SCALE;
+
+#define PARSE(CMD) parseCommand(cmd, CMD, &arg1, &arg2)
 
 HX711 scale;
 
@@ -72,13 +86,71 @@ void setup() {
   digitalWrite(RELAYPIN, !RELAY_ENABLE);
   Serial.begin(9600); // slow serial comm
 
+
+  // Setup EEPROM
+  uint16_t eeprom_version = 0;
+  // EEPROM_ADDRESSES
+
+  for (unsigned int i=0; i < EEPROM_MAX_VALUES; i++)
+  {
+    eeprom_address_scale[i] = EEPROM_ADDRESS_SCALES_START + i*sizeof(float);
+  }
+
+  EEPROM.get(EEPROM_START, eeprom_version);
+  if (eeprom_version != EEPROM_VERSION)
+  {
+    // EEPROM is not initialized
+    EEPROM.put(EEPROM_START, (uint16_t)(EEPROM_VERSION));
+    EEPROM.put(EEPROM_ADDRESS_CURRENT_SENSOR, (unsigned char)0);
+    for (unsigned int i=0; i < EEPROM_MAX_VALUES; i++)
+    {
+      EEPROM.put(eeprom_address_scale[i], (float)(SCALE));
+    }
+  }
+
+  EEPROM.get(EEPROM_ADDRESS_CURRENT_SENSOR, current_sensor);
+  EEPROM.get(eeprom_address_scale[current_sensor], current_scale);
+
+
+
   Serial.println("Initializing the scale");
   // parameter "gain" is omitted; the default value 128 is used by the library (channel A)
   scale.begin(DATA_PIN, CLK_PIN);
 
-  scale.set_scale(SCALE);
-  scale.tare(20);  // set the tare
+  scale.set_scale(current_scale);
+  scale.tare(TARE_DURATION);  // set the tare
   
+}
+
+bool parseCommand(String commandLine, const char *expectedCommand, int *arg1, float *arg2)
+{
+  const char *command = commandLine.c_str();
+  *arg1 = -1;
+  *arg2 = 0.0f;
+  // check if this is the command we are looking for
+  if (!commandLine.startsWith(expectedCommand))
+    return false;
+
+  // parse arguments
+  char *currentTok = strtok(command, " ");
+  currentTok = strtok(NULL, " "); // this should be the first argument
+  if (!currentTok) return true;
+  *arg1 = atoi(currentTok);
+  currentTok = strtok(NULL, " "); // this should be the second argument
+  if (!currentTok) return true;
+  *arg2 = atof(currentTok);
+}
+
+void setSensor(int sensor)
+{
+  current_sensor = sensor;
+  EEPROM.get(eeprom_address_scale[current_sensor], current_scale);
+  scale.set_scale(current_scale);
+}
+
+void setScaleForSensor(int sensor, float scale)
+{
+  EEPROM.put(eeprom_address_scale[sensor], scale);
 }
 
 void loop() {
@@ -97,27 +169,65 @@ void loop() {
  
   if (Serial.available() > 0)
   {
+    int arg1;
+    float arg2;
     // look for a command
     String cmd = Serial.readStringUntil('\n');
     cmd.trim();
-    if (cmd.equalsIgnoreCase("ON"))
+    cmd.toUpperCase();
+    if (PARSE("ON"))
     {
       outputWillEnable = RELAY_ENABLE;
       Serial.println("Enabling");
-    } else if (cmd.equalsIgnoreCase("OFF"))
+    } else if (PARSE("OFF"))
     {
       outputWillEnable = !RELAY_ENABLE;
       Serial.println("Disabling");
-    } else if (cmd.equalsIgnoreCase("RESET"))
+    } else if (PARSE("RESET"))
     {
       Serial.println("Resetting the tare");
-      scale.tare(20);
+      scale.tare(TARE_DURATION);
       Serial.println("Done");
-    } else if (cmd.equalsIgnoreCase("TRIG"))
+    } else if (PARSE("TRIG"))
     {
       lastPulse = 0;
       runPulse = true;
       Serial.println("Forcing trigger");
+      
+    } else if (PARSE("GET_SCALE"))
+    {
+      Serial.print("Current scale: ");
+      Serial.println(current_scale);
+    } else if (PARSE("GET_SENSOR"))
+    {
+      Serial.print("Current sensor: ");
+      Serial.println(current_sensor);
+    } else if (PARSE("SET_SENSOR"))
+    {
+      if (arg1 < 0)
+      {
+        Serial.println("Malformed command");
+      } else
+      {
+        setSensor(arg1);
+        Serial.print("Sensor changed to: ");
+        Serial.print(current_sensor);
+        Serial.print(", scale: ");
+        Serial.println(current_scale);
+      }
+    } else if (PARSE("SET_SCALE"))
+    {
+      if (arg1 < 0 || arg2 < 0)
+      {
+        Serial.println("Malformed command");
+      } else
+      {
+        setScaleForSensor(arg1, arg2);
+        Serial.print("Scale changed for sensor: ");
+        Serial.print(arg1);
+        Serial.print(" to: ");
+        Serial.println(arg2);
+      }
     }
   }
   if (millis() - lastPulse >= OFFPERIOD)
