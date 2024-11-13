@@ -45,6 +45,13 @@
 
 #define TARE_DURATION 20
 
+// display definitions
+//#define DISPLAY // undefine if not used
+#define DISPLAY_CLK 8
+#define DISPLAY_DATA 9
+#define HOLD_TIME 600
+
+
 #define EEPROM_MAX_VALUES 10
 #define EEPROM_VERSION 0xAB01
 #define EEPROM_START 0
@@ -63,6 +70,27 @@ long lastPulse = millis();
 long triggerOnTime = -1;
 bool outputEnable = true;
 bool outputWillEnable = true;
+
+
+#ifdef DISPLAY
+  #include "TM1637Display.h"
+
+  TM1637Display display(DISPLAY_CLK, DISPLAY_DATA);  //set up the 4-Digit Display.
+
+  float maxVal = 0;
+  unsigned long lastMaxShown = 0;
+
+  const uint8_t initDisplay[] = { // display shows ----
+    // XGFEDCBA
+        0b01000000,
+        0b01000000,
+        0b01000000,
+        0b01000000
+  };
+
+#endif
+
+
 
 void setOutput(int value)
 {
@@ -111,6 +139,10 @@ void setup() {
   EEPROM.get(EEPROM_ADDRESS_CURRENT_SENSOR, current_sensor);
   EEPROM.get(eeprom_address_scale[current_sensor], current_scale);
 
+  #ifdef DISPLAY
+    display.setBrightness(0x0a);  //set the diplay to maximum brightness
+    display.setSegments(initDisplay);
+  #endif
 
 
   Serial.println("Initializing the scale");
@@ -232,7 +264,6 @@ void loop() {
   }
   if (millis() - lastPulse >= OFFPERIOD)
   { // we are in a quiet time now, we can enable/disable output
-     //Serial.println("QUIET");
      if (outputEnable != outputWillEnable)
      {
        
@@ -248,17 +279,9 @@ void loop() {
     { 
      // run the pulse only if the last seen interrupt happened >= OFFPERIOD ms before.
      // Otherwise, don't run the pulse, but still record that an interrupt was triggered
-     /*
-      digitalWrite(OUTPUTPIN, HIGH);
-      #ifdef OUTPUTPIN2
-        digitalWrite(OUTPUTPIN2, HIGH);
-      #endif
-      */
+
       setOutput(HIGH);
       Serial.println("TRIG");
-      // don't block for trigger pulse off
-      /*delay(PULSEDURATION); 
-      digitalWrite(OUTPUTPIN, LOW);*/
       triggerOnTime = millis();
     }
     lastPulse = millis();
@@ -270,6 +293,15 @@ void loop() {
     Serial.print("Force: ");
     float val = scale.get_units(); 
     Serial.println(val, 1);
+    
+    #ifdef DISPLAY
+      if (val > maxVal || (millis() - lastMaxShown > HOLD_TIME))
+      {
+        lastMaxShown = millis();
+        maxVal = val;
+      }
+      display.showNumberDec((int)maxVal);
+    #endif
   }
 }
 
